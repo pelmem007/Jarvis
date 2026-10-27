@@ -27,6 +27,16 @@ jobs:
       - name: Install
         working-directory: app
         run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
+      - name: Inspect whisper.rn
+        working-directory: app/node_modules/whisper.rn
+        run: |
+          node -e "const p=require('./package.json');console.log('VERSION',p.version,'MAIN',p.main);console.log(JSON.stringify(p.exports,null,1))" || true
+          echo "--- FILES"
+          ls
+          echo "--- REALTIME"
+          find . -iname "*realtime*" -not -path "./node_modules/*" | head -30
+          echo "--- ADAPTERS"
+          find . -iname "*adapter*" -not -path "./node_modules/*" | head -30
       - name: Check JS bundle (fast)
         working-directory: app
         run: npx expo export --platform android
