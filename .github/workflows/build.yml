@@ -98,9 +98,46 @@ jobs:
           console.log("--- result:");
           console.log(src.split("\n").filter((l) => /__rt|__ad|RealtimeTranscriber: any|AudioPcmStreamAdapter: any/.test(l)).join("\n"));
           EOF
-      - name: Check JS bundle (fast)
+      - name: Check JS bundle and auto-install missing modules
         working-directory: app
-        run: npx expo export --platform android
+        run: |
+          set -u
+          added=" "
+          for i in 1 2 3 4 5 6 7 8; do
+            echo "=== bundle attempt $i"
+            if npx expo export --platform android > export.log 2>&1; then
+              tail -8 export.log
+              echo "BUNDLE OK"
+              exit 0
+            fi
+            mod=$(sed -nE '/Unable to resolve module/{s/.*Unable to resolve module ([^ ]+) from .*/\1/p;q}' export.log)
+            mod=${mod%:}
+            if [ -z "$mod" ]; then
+              echo "Unknown bundling error:"; tail -70 export.log; exit 1
+            fi
+            case "$mod" in
+              .*|/*|@/*) echo "Cannot auto-fix local path: $mod"; tail -70 export.log; exit 1;;
+            esac
+            case "$mod" in
+              @*) pkg=$(echo "$mod" | cut -d/ -f1-2);;
+              *)  pkg=$(echo "$mod" | cut -d/ -f1);;
+            esac
+            case "$pkg" in
+              stream) pkg=readable-stream;;
+              path) pkg=path-browserify;;
+              zlib) pkg=browserify-zlib;;
+              crypto) pkg=react-native-quick-crypto;;
+            esac
+            case "$added" in
+              *" $pkg "*) echo "Already added $pkg but still failing:"; tail -70 export.log; exit 1;;
+            esac
+            echo ">>> Missing module '$mod', installing '$pkg'"
+            added="$added$pkg "
+            if ! pnpm add "$pkg" --ignore-scripts; then
+              echo "pnpm add failed for $pkg"; tail -70 export.log; exit 1
+            fi
+          done
+          echo "Too many attempts"; tail -70 export.log; exit 1
       - name: Prebuild
         working-directory: app
         run: npx expo prebuild --platform android --no-install
