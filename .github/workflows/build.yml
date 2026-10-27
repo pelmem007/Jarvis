@@ -27,16 +27,77 @@ jobs:
       - name: Install
         working-directory: app
         run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
-      - name: Inspect whisper.rn
-        working-directory: app/node_modules/whisper.rn
+      - name: Fix whisper.rn imports
+        working-directory: app
         run: |
-          node -e "const p=require('./package.json');console.log('VERSION',p.version,'MAIN',p.main);console.log(JSON.stringify(p.exports,null,1))" || true
-          echo "--- FILES"
-          ls
-          echo "--- REALTIME"
-          find . -iname "*realtime*" -not -path "./node_modules/*" | head -30
-          echo "--- ADAPTERS"
-          find . -iname "*adapter*" -not -path "./node_modules/*" | head -30
+          node <<'EOF'
+          const fs = require("fs");
+          const path = require("path");
+          const cwd = process.cwd();
+          const root = path.join(cwd, "node_modules", "whisper.rn");
+          const target = path.join(cwd, "lib", "offline-speech-native.native.ts");
+          const SKIP = new Set(["node_modules", "android", "ios", "cpp", "example", "docs", ".git"]);
+
+          function walk(dir, out) {
+            for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+              const p = path.join(dir, e.name);
+              if (e.isDirectory()) { if (!SKIP.has(e.name)) walk(p, out); }
+              else if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(e.name) && !/\.d\.ts$/.test(e.name) && !/\.(test|spec)\./.test(e.name)) out.push(p);
+            }
+            return out;
+          }
+
+          const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+          console.log("whisper.rn version:", pkg.version);
+          const files = walk(root, []);
+          console.log("--- files mentioning realtime/adapter:");
+          files.filter((f) => /realtime|adapter/i.test(f)).forEach((f) => console.log("  " + path.relative(root, f)));
+
+          function rank(p, stems) {
+            const r = path.relative(root, p);
+            let s = r.startsWith("src" + path.sep) ? 0 : r.includes("commonjs") ? 20 : r.includes(path.join("lib", "module")) ? 10 : 15;
+            const stem = path.basename(p).replace(/\.[a-z]+$/, "");
+            if (!stems.includes(stem)) s += 5;
+            return s;
+          }
+
+          function find(name, stems) {
+            const hits = files.filter((f) => {
+              const c = fs.readFileSync(f, "utf8");
+              return c.includes(name) && /\bexports?\b/.test(c);
+            });
+            hits.sort((a, b) => rank(a, stems) - rank(b, stems));
+            return hits[0] || null;
+          }
+
+          function rel(file) {
+            let r = path.relative(path.dirname(target), file).split(path.sep).join("/").replace(/\.(ts|tsx|js|jsx)$/, "");
+            return r.startsWith(".") ? r : "./" + r;
+          }
+
+          const rt = find("RealtimeTranscriber", ["index", "realtime-transcription"]);
+          const ad = find("AudioPcmStreamAdapter", ["index", "adapters"]);
+          console.log("RealtimeTranscriber module:", rt && path.relative(root, rt));
+          console.log("AudioPcmStreamAdapter module:", ad && path.relative(root, ad));
+
+          let src = fs.readFileSync(target, "utf8");
+          const reRt = /const\s*\{\s*RealtimeTranscriber\s*\}\s*=\s*await import\("whisper\.rn\/realtime-transcription"\);/;
+          const reAd = /const\s*\{\s*AudioPcmStreamAdapter\s*\}\s*=\s*await import\("whisper\.rn\/realtime-transcription\/adapters"\);/;
+          if (!reRt.test(src) || !reAd.test(src)) { console.log("Imports already patched or changed, nothing to do."); process.exit(0); }
+
+          if (rt && ad) {
+            src = src.replace(reRt, () => `const __rt = await import("${rel(rt)}"); const RealtimeTranscriber = __rt.RealtimeTranscriber ?? __rt.default;`);
+            src = src.replace(reAd, () => `const __ad = await import("${rel(ad)}"); const AudioPcmStreamAdapter = __ad.AudioPcmStreamAdapter ?? __ad.default;`);
+            console.log("PATCHED: imports now point to files inside whisper.rn");
+          } else {
+            src = src.replace(reRt, () => `const RealtimeTranscriber: any = null; throw new Error("Realtime-распознавание недоступно в этой версии whisper.rn");`);
+            src = src.replace(reAd, () => `const AudioPcmStreamAdapter: any = null;`);
+            console.log("FALLBACK: realtime module not found in whisper.rn, wake-word feature disabled, APK still builds");
+          }
+          fs.writeFileSync(target, src);
+          console.log("--- result:");
+          console.log(src.split("\n").filter((l) => /__rt|__ad|RealtimeTranscriber: any|AudioPcmStreamAdapter: any/.test(l)).join("\n"));
+          EOF
       - name: Check JS bundle (fast)
         working-directory: app
         run: npx expo export --platform android
