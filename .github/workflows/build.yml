@@ -5,6 +5,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      CI: "1"
+      EXPO_NO_TELEMETRY: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Unzip
@@ -24,12 +27,15 @@ jobs:
       - name: Install
         working-directory: app
         run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
+      - name: Check JS bundle (fast)
+        working-directory: app
+        run: npx expo export --platform android
       - name: Prebuild
         working-directory: app
         run: npx expo prebuild --platform android --no-install
       - name: Build APK
         working-directory: app/android
-        run: ./gradlew assembleRelease --no-daemon
+        run: ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon
       - uses: actions/upload-artifact@v4
         with:
           name: jarvis-apk
